@@ -217,6 +217,14 @@ class TestData(ConfigMixin, unittest.TestCase):
                          environment='bar', device_name='device3')),
                          sorted(['device3']))
 
+    def testDeviceHardwareType(self):
+        new_hw_id = add_hardware_type('phone', 'nexus-one')
+        add_device('phonedevice', server='server1', hardware_type_id=new_hw_id)
+        self.assertEqual(data.device_hardware_type('device1'),
+                         {'type': 'panda', 'model': 'ES Rev B2'})
+        self.assertEqual(data.device_hardware_type('phonedevice'),
+                         {'type': 'phone', 'model': 'nexus-one'})
+
 
 class TestDeviceList(ConfigMixin, unittest.TestCase):
     def setUp(self):

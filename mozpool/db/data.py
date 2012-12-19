@@ -326,6 +326,19 @@ def set_device_config(device, image_name, boot_config):
                         boot_config=boot_config))
     return config
 
+def device_hardware_type(device):
+    """
+    Get the hardware type and model for this device.
+    """
+    res = sql.get_conn().execute(select([model.hardware_types.c.type,
+                                         model.hardware_types.c.model],
+            from_obj=model.devices.join(model.hardware_types),
+            whereclause=(model.devices.c.name==device)))
+    row = res.fetchone()
+    if row:
+        return {'type': row[0], 'model': row[1]}
+    return {}
+
 def set_device_comments(device_name, comments):
     conn = sql.get_conn()
     conn.execute(model.devices.update().

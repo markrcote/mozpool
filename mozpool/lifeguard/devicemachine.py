@@ -6,6 +6,7 @@ import datetime
 from mozpool import config, statemachine, statedriver
 from mozpool.bmm import api as bmm_api
 from mozpool.db import data, logs
+from mozpool.sut import api as sut_api
 import mozpool.lifeguard
 
 
@@ -99,6 +100,7 @@ class AcceptPleaseRequests(object):
         data.set_device_config(self.machine.device_name,
                                args['image'],
                                args['boot_config'])
+        
         # FIXME: We'll decide here how we go about imaging; for now, it's always
         # PXE booting.
         self.machine.goto_state(start_pxe_boot)
@@ -275,6 +277,38 @@ class pc_pinging(statemachine.State):
         self.machine.goto_state(ready)
 
 ####
+# SUT Booting and Verifying
+
+@DeviceStateMachine.state_class
+class start_sut_boot(statemachine.State):
+
+    def on_entry(self):
+        self.machine.clear_counter()
+        self.machine.goto_state(sut_rebooting)
+
+@DeviceStateMachine.state_class
+class sut_rebooting(statemachine.State):
+
+    def on_entry(self):
+        def reboot_initiated(success):
+            if success:
+                mozpool.lifeguard.driver.handle_event(self.machine.device_name,
+                                                      'sut_reboot_ok', {})
+        sut_api.start_reboot(self.machine.device_name, reboot_initiated)
+
+    def on_timeout(self):
+        if (self.machine.increment_counter('sut_rebooting') >
+            self.PERMANENT_FAILURE_COUNT):
+            self.machine.goto_state(failed_sut_rebooting)
+        else:
+            self.machine.goto_state(self.state_name)
+
+    def on_sut_reboot_ok(self, args):
+        self.machine.clear_counter('sut_rebooting')
+        self.machine.goto_state(pc_pinging)
+
+
+####
 # PXE Booting
 
 # Every PXE boot process starts off the same way: set up the PXE config and
@@ -306,7 +340,7 @@ class start_pxe_boot(statemachine.State):
 class pxe_power_cycling(PowerCycleMixin, statemachine.State):
     """
     A PXE boot has been requested, and the device is being power-cycled.  Once
-    the power cycle is successful, go to state 'pxe_starting'.
+    the power cycle is successful, go to state 'pxe_booting'.
     """
 
     power_cycle_complete_state = 'pxe_booting'

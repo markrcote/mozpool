@@ -37,8 +37,9 @@ def add_server(hostname):
     sql.get_conn().execute(model.imaging_servers.insert(), fqdn=hostname)
 
 def add_hardware_type(hw_type, hw_model):
-    sql.get_conn().execute(model.hardware_types.insert(), type=hw_type,
-                           model=hw_model)
+    res = sql.get_conn().execute(model.hardware_types.insert(), type=hw_type,
+                                 model=hw_model)
+    return res.lastrowid
 
 def add_device(device, server="server", state="offline",
               mac_address="000000000000",
