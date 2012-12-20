@@ -336,7 +336,7 @@ def device_hardware_type(device):
             whereclause=(model.devices.c.name==device)))
     row = res.fetchone()
     if row:
-        return {'type': row[0], 'model': row[1]}
+        return {'type': row['type'], 'model': row['model']}
     return {}
 
 def set_device_comments(device_name, comments):

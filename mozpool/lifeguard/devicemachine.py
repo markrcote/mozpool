@@ -91,8 +91,14 @@ class LifeguardDriver(statedriver.StateDriver):
 class AcceptPleaseRequests(object):
 
     def on_please_power_cycle(self, args):
-        self.machine.goto_state(pc_power_cycling)
-
+        hw_type = data.device_hardware_type(self.machine.device_name).get(
+            'type', '')
+        if hw_type == 'panda':
+            self.machine.goto_state(pc_power_cycling)
+        elif hw_type == 'phone':
+            self.machine.goto_state(start_sut_boot)
+        else:
+            self.logger.error('unknown hardware type "%s"' % hw_type)
 
     def on_please_image(self, args):
         self.logger.info('writing image %s, boot config %s to db' %
@@ -100,10 +106,14 @@ class AcceptPleaseRequests(object):
         data.set_device_config(self.machine.device_name,
                                args['image'],
                                args['boot_config'])
-        
-        # FIXME: We'll decide here how we go about imaging; for now, it's always
-        # PXE booting.
-        self.machine.goto_state(start_pxe_boot)
+        hw_type = data.device_hardware_type(self.machine.device_name).get(
+            'type', '')
+        if hw_type == 'panda':
+            self.machine.goto_state(start_pxe_boot)
+        elif hw_type == 'phone':
+            self.machine.goto_state(start_sut_boot)
+        else:
+            self.logger.error('unknown hardware type "%s"' % hw_type)
 
 
 class PowerCycleMixin(object):
@@ -276,18 +286,34 @@ class pc_pinging(statemachine.State):
         self.machine.clear_counter('pc_pinging')
         self.machine.goto_state(ready)
 
+
 ####
 # SUT Booting and Verifying
 
+# These states access the device's SUT agent via mozdevice.
+
 @DeviceStateMachine.state_class
 class start_sut_boot(statemachine.State):
+
+    """
+    Reboot via SUT has been requested.
+    """
 
     def on_entry(self):
         self.machine.clear_counter()
         self.machine.goto_state(sut_rebooting)
 
+
 @DeviceStateMachine.state_class
 class sut_rebooting(statemachine.State):
+
+    """
+    Issue reboot command to SUT agent via mozdevice and wait for the SUT
+    reboot callback.
+    """
+
+    TIMEOUT = 300
+    PERMANENT_FAILURE_COUNT = 3
 
     def on_entry(self):
         def reboot_initiated(success):
@@ -305,7 +331,66 @@ class sut_rebooting(statemachine.State):
 
     def on_sut_reboot_ok(self, args):
         self.machine.clear_counter('sut_rebooting')
-        self.machine.goto_state(pc_pinging)
+        self.machine.goto_state(sut_verifying)
+
+
+@DeviceStateMachine.state_class
+class sut_verifying(statemachine.State):
+
+    """
+    Verify that we can establish a connection to the SUT agent.
+    """
+
+    TIMEOUT = 15
+    PERMANENT_FAILURE_COUNT = 3
+
+    def on_entry(self):
+        def sut_verified(success):
+            if success:
+                mozpool.lifeguard.driver.handle_event(self.machine.device_name,
+                                                      'sut_verify_ok', {})
+        sut_api.start_sut_verify(self.machine.device_name, sut_verified)
+
+    def on_timeout(self):
+        if (self.machine.increment_counter(self.state_name) >
+            self.PERMANENT_FAILURE_COUNT):
+            self.machine.goto_state(failed_sut_verifying)
+        else:
+            self.machine.goto_state(self.state_name)
+
+    def on_sut_verify_ok(self, args):
+        self.machine.clear_counter(self.state_name)
+        self.machine.goto_state(sut_sdcard_verifying)
+
+
+@DeviceStateMachine.state_class
+class sut_sdcard_verifying(statemachine.State):
+
+    """
+    Verify that we can write a test file to the device's SD card via the SUT
+    agent.
+    """
+
+    TIMEOUT = 30
+    PERMANENT_FAILURE_COUNT = 3
+
+    def on_entry(self):
+        def sdcard_verified(success):
+            if success:
+                mozpool.lifeguard.driver.handle_event(self.machine.device_name,
+                                                      'sut_sdcard_ok', {})
+        sut_api.start_check_sdcard(self.machine.device_name, sdcard_verified)
+
+    def on_timeout(self):
+        if (self.machine.increment_counter(self.state_name) >
+            self.PERMANENT_FAILURE_COUNT):
+            self.machine.goto_state(failed_sut_sdcard_verifying)
+        else:
+            self.machine.goto_state(self.state_name)
+
+    def on_sut_sdcard_ok(self, args):
+        self.machine.clear_counter(self.state_name)
+        self.machine.goto_state(ready)
 
 
 ####
@@ -521,7 +606,6 @@ class android_pinging(statemachine.State):
         self.machine.clear_counter('ping')
         self.machine.goto_state(ready)
 
-    # TODO: also try a SUT agent connection here (mcote)
 
 ####
 # PXE Booting :: B2G Installation
@@ -630,9 +714,8 @@ class b2g_pinging(statemachine.State):
     def on_ping_ok(self, args):
         self.machine.clear_counter(self.state_name)
         self.machine.clear_counter('ping')
-        self.machine.goto_state(ready)
+        self.machine.goto_state(sut_verifying)
 
-    # TODO: also try a SUT agent connection here (mcote)
 
 ####
 # PXE Booting :: Maintenance Mode
@@ -667,6 +750,21 @@ class failed_pxe_booting(failed):
 @DeviceStateMachine.state_class
 class failed_mobile_init_started(failed):
     "While executing mobile-init, the device repeatedly failed to contact the imaging server from the live image."
+
+class failed_sut_rebooting(failed):
+    "Could not send SUT reboot command."
+
+@DeviceStateMachine.state_class
+class failed_sut_verifying(failed):
+    "Could not connect to SUT agent."
+
+@DeviceStateMachine.state_class
+class failed_sut_sdcard_verifying(failed):
+    "Failed to verify device's SD card."
+
+@DeviceStateMachine.state_class
+class failed_sut_pinging(failed):
+    "After rebooting through SUT, device did not come back up."
 
 @DeviceStateMachine.state_class
 class failed_android_downloading(failed):
